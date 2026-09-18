@@ -6,7 +6,7 @@ from ddgs import DDGS
 
 
 # ============================================================
-# GLOBAL HTTP SESSION
+# GLOBAL SESSION
 # ============================================================
 
 SESSION = requests.Session()
@@ -17,56 +17,48 @@ SESSION.headers.update({
 
 
 # ============================================================
-# INTERNET SEARCH
+# SEARCH
 # ============================================================
 
 def search_internet(query: str, max_results: int = 5) -> list:
-    """
-    Perform live internet search using DuckDuckGo.
-    Works with destinations worldwide.
-    """
 
     try:
+
         results = DDGS().text(
             query,
             max_results=max_results
         )
 
-        cleaned = []
-
-        for item in results:
-            cleaned.append({
+        return [
+            {
                 "title": item.get("title", ""),
                 "url": item.get("href", ""),
                 "snippet": item.get("body", "")
-            })
-
-        return cleaned
+            }
+            for item in results
+        ]
 
     except Exception as e:
 
         return [{
             "title": "Search unavailable",
             "url": "",
-            "snippet": f"Internet search error: {str(e)}"
+            "snippet": str(e)
         }]
 
 
 # ============================================================
-# NOMINATIM GEOCODING
+# NOMINATIM
 # ============================================================
 
 def nominatim_geocode(query: str):
-    """
-    Global geocoding using OpenStreetMap Nominatim.
-    """
 
     url = "https://nominatim.openstreetmap.org/search"
 
     params = {
         "q": query,
         "format": "json",
-        "limit": 1,
+        "limit": 3,
         "addressdetails": 1
     }
 
@@ -85,16 +77,27 @@ def nominatim_geocode(query: str):
         if not data:
             return None
 
-        result = data[0]
+        # Return ALL candidates
+        candidates = []
 
-        return {
-            "lat": float(result["lat"]),
-            "lon": float(result["lon"]),
-            "display_name": result.get(
-                "display_name",
-                query
-            )
-        }
+        for item in data:
+
+            candidates.append({
+                "lat": float(item["lat"]),
+                "lon": float(item["lon"]),
+                "display_name": item.get(
+                    "display_name",
+                    query
+                ),
+                "address": item.get(
+                    "address",
+                    {}
+                )
+            })
+
+        time.sleep(1)
+
+        return candidates
 
     except Exception:
 
@@ -102,20 +105,16 @@ def nominatim_geocode(query: str):
 
 
 # ============================================================
-# PHOTON FALLBACK GEOCODING
+# PHOTON
 # ============================================================
 
 def photon_geocode(query: str):
-    """
-    Photon is used as a second global geocoding source
-    when Nominatim cannot find the location.
-    """
 
     url = "https://photon.komoot.io/api/"
 
     params = {
         "q": query,
-        "limit": 1
+        "limit": 5
     }
 
     try:
@@ -130,36 +129,65 @@ def photon_geocode(query: str):
 
         data = response.json()
 
-        features = data.get("features", [])
+        features = data.get(
+            "features",
+            []
+        )
 
         if not features:
             return None
 
-        feature = features[0]
+        candidates = []
 
-        coordinates = feature["geometry"]["coordinates"]
+        for feature in features:
 
-        properties = feature.get("properties", {})
+            coordinates = feature[
+                "geometry"
+            ]["coordinates"]
 
-        name = properties.get(
-            "name",
-            query
-        )
+            properties = feature.get(
+                "properties",
+                {}
+            )
 
-        city = properties.get("city", "")
-        country = properties.get("country", "")
+            candidates.append({
 
-        display_parts = [
-            str(x)
-            for x in [name, city, country]
-            if x
-        ]
+                "lat": float(
+                    coordinates[1]
+                ),
 
-        return {
-            "lat": float(coordinates[1]),
-            "lon": float(coordinates[0]),
-            "display_name": ", ".join(display_parts)
-        }
+                "lon": float(
+                    coordinates[0]
+                ),
+
+                "display_name": ", ".join(
+                    str(x)
+                    for x in [
+                        properties.get(
+                            "name",
+                            query
+                        ),
+                        properties.get(
+                            "city",
+                            ""
+                        ),
+                        properties.get(
+                            "state",
+                            ""
+                        ),
+                        properties.get(
+                            "country",
+                            ""
+                        )
+                    ]
+                    if x
+                ),
+
+                "address": properties
+
+            })
+
+        return candidates
 
     except Exception:
 
@@ -167,53 +195,174 @@ def photon_geocode(query: str):
 
 
 # ============================================================
-# GLOBAL GEOCODING
+# DISTANCE BETWEEN TWO COORDINATES
+# ============================================================
+
+def haversine_distance(
+    lat1,
+    lon1,
+    lat2,
+    lon2
+):
+
+    from math import (
+        radians,
+        sin,
+        cos,
+        sqrt,
+        atan2
+    )
+
+    R = 6371.0
+
+    lat1 = radians(lat1)
+    lon1 = radians(lon1)
+    lat2 = radians(lat2)
+    lon2 = radians(lon2)
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = (
+        sin(dlat / 2) ** 2
+        +
+        cos(lat1)
+        * cos(lat2)
+        * sin(dlon / 2) ** 2
+    )
+
+    c = 2 * atan2(
+        sqrt(a),
+        sqrt(1 - a)
+    )
+
+    return R * c
+
+
+# ============================================================
+# SELECT BEST GEOCODING CANDIDATE
+# ============================================================
+
+def choose_candidate(
+    candidates,
+    reference=None,
+    max_distance_km=None
+):
+
+    if not candidates:
+        return None
+
+    # If we don't have a reference location,
+    # take the first reasonable candidate.
+    if not reference:
+
+        return {
+            "lat": candidates[0]["lat"],
+            "lon": candidates[0]["lon"],
+            "display_name": candidates[0][
+                "display_name"
+            ],
+            "address": candidates[0].get(
+                "address",
+                {}
+            )
+        }
+
+    best = None
+    best_distance = float("inf")
+
+    for candidate in candidates:
+
+        distance = haversine_distance(
+
+            reference["lat"],
+            reference["lon"],
+
+            candidate["lat"],
+            candidate["lon"]
+        )
+
+        if (
+            max_distance_km is not None
+            and distance > max_distance_km
+        ):
+            continue
+
+        if distance < best_distance:
+
+            best_distance = distance
+            best = candidate
+
+    if not best:
+        return None
+
+    return {
+        "lat": best["lat"],
+        "lon": best["lon"],
+        "display_name": best[
+            "display_name"
+        ],
+        "address": best.get(
+            "address",
+            {}
+        ),
+        "distance_from_destination_km":
+            round(best_distance, 1)
+    }
+
+
+# ============================================================
+# GLOBAL GEOCODE
 # ============================================================
 
 _GEOCODE_CACHE = {}
 
 
 def geocode(place: str):
-    """
-    Robust global geocoder.
-
-    Strategy:
-        1. Nominatim
-        2. Photon
-
-    Results are cached to avoid repeated API calls.
-    """
 
     if not place:
         return None
 
     place = place.strip()
 
-    cache_key = place.lower()
+    key = place.lower()
 
-    if cache_key in _GEOCODE_CACHE:
-        return _GEOCODE_CACHE[cache_key]
+    if key in _GEOCODE_CACHE:
+        return _GEOCODE_CACHE[key]
 
-    # First attempt
-    result = nominatim_geocode(place)
+    # Nominatim
+    candidates = nominatim_geocode(
+        place
+    )
 
-    if result:
+    if candidates:
 
-        _GEOCODE_CACHE[cache_key] = result
+        result = choose_candidate(
+            candidates
+        )
 
-        # Be polite to Nominatim
-        time.sleep(1)
+        if result:
 
-        return result
+            _GEOCODE_CACHE[key] = result
 
-    # Second attempt
-    result = photon_geocode(place)
+            return result
 
-    if result:
+    # Photon fallback
+    candidates = photon_geocode(
+        place
+    )
 
-        _GEOCODE_CACHE[cache_key] = result
+    if candidates:
 
-        return result
+        result = choose_candidate(
+            candidates
+        )
+
+        if result:
+
+            _GEOCODE_CACHE[key] = result
+
+            return result
 
     return None
 
@@ -224,14 +373,9 @@ def geocode(place: str):
 
 def geocode_attraction(
     attraction: str,
-    destination: str
+    destination: str,
+    destination_coordinates=None
 ):
-    """
-    Attempts to find a tourist attraction globally.
-
-    The important point is that we DO NOT assume Kerala,
-    India, or any particular country.
-    """
 
     if not attraction:
         return None
@@ -239,52 +383,78 @@ def geocode_attraction(
     attraction = attraction.strip()
     destination = destination.strip()
 
+    if destination_coordinates is None:
+
+        destination_coordinates = geocode(
+            destination
+        )
+
+    # Several global query formats
     queries = [
 
-        # Most specific
         f"{attraction}, {destination}",
 
-        # Destination + attraction
         f"{attraction} in {destination}",
 
-        # Attraction + destination
         f"{destination} {attraction}",
 
-        # Exact attraction
         attraction
-    ]
 
-    checked = set()
+    ]
 
     for query in queries:
 
-        key = query.lower()
+        # Nominatim
+        candidates = nominatim_geocode(
+            query
+        )
 
-        if key in checked:
-            continue
+        if candidates:
 
-        checked.add(key)
+            result = choose_candidate(
 
-        result = geocode(query)
+                candidates,
 
-        if result:
+                reference=destination_coordinates,
 
-            return result
+                max_distance_km=300
+            )
+
+            if result:
+
+                return result
+
+        # Photon fallback
+        candidates = photon_geocode(
+            query
+        )
+
+        if candidates:
+
+            result = choose_candidate(
+
+                candidates,
+
+                reference=destination_coordinates,
+
+                max_distance_km=300
+            )
+
+            if result:
+
+                return result
 
     return None
 
 
 # ============================================================
-# ROUTE CALCULATION
+# ROUTE BETWEEN COORDINATES
 # ============================================================
 
 def calculate_route_from_coordinates(
     start,
     end
 ):
-    """
-    Calculate actual road distance using OSRM.
-    """
 
     url = (
         "https://router.project-osrm.org/"
@@ -314,26 +484,35 @@ def calculate_route_from_coordinates(
 
             return {
                 "success": False,
-                "message": "OSRM could not calculate this road route."
+                "message": (
+                    "OSRM could not calculate "
+                    "this route."
+                )
             }
 
-        routes = data.get("routes", [])
+        routes = data.get(
+            "routes",
+            []
+        )
 
         if not routes:
 
             return {
                 "success": False,
-                "message": "No road route was found."
+                "message": "No road route found."
             }
 
         route = routes[0]
 
         return {
+
             "success": True,
+
             "distance_km": round(
                 route["distance"] / 1000,
                 1
             ),
+
             "duration_minutes": round(
                 route["duration"] / 60
             )
@@ -348,35 +527,17 @@ def calculate_route_from_coordinates(
 
 
 # ============================================================
-# GLOBAL TRIP ROUTING
+# COMPLETE TRIP ROUTE
 # ============================================================
 
 def calculate_trip_route(
-    destination: str,
-    attractions: list
+    destination,
+    attractions
 ):
-    """
-    Calculate route through destination + attractions.
 
-    Only successfully geocoded attractions are included.
-
-    This prevents fake:
-        0 km
-        0 minutes
-
-    values.
-    """
-
-    destination = destination.strip()
-
-    destination_coordinates = geocode(destination)
-
-    if not destination_coordinates:
-
-        # Try a broader query
-        destination_coordinates = geocode(
-            destination + " city center"
-        )
+    destination_coordinates = geocode(
+        destination
+    )
 
     if not destination_coordinates:
 
@@ -389,24 +550,21 @@ def calculate_trip_route(
             "successful_legs": 0,
             "failed_locations": [
                 destination
-            ],
-            "message": (
-                f"Could not geocode destination: "
-                f"{destination}"
-            )
+            ]
         }
 
-    verified_locations = [
+    verified = [
         {
             "name": destination,
-            "coordinates": destination_coordinates
+            "coordinates":
+                destination_coordinates
         }
     ]
 
     failed_locations = []
 
     # --------------------------------------------------------
-    # Geocode attractions
+    # Geocode every attraction
     # --------------------------------------------------------
 
     for attraction in attractions:
@@ -421,25 +579,38 @@ def calculate_trip_route(
         )
 
         coordinates = geocode_attraction(
+
             attraction,
-            destination
+
+            destination,
+
+            destination_coordinates
         )
 
         if coordinates:
 
-            verified_locations.append({
+            verified.append({
+
                 "name": attraction,
-                "coordinates": coordinates
+
+                "coordinates":
+                    coordinates
+
             })
 
         else:
+
+            print(
+                f"   ✗ Rejected: "
+                f"{attraction}"
+            )
 
             failed_locations.append(
                 attraction
             )
 
     # --------------------------------------------------------
-    # Calculate route legs
+    # Routes
     # --------------------------------------------------------
 
     legs = []
@@ -448,33 +619,43 @@ def calculate_trip_route(
     total_minutes = 0
 
     for i in range(
-        len(verified_locations) - 1
+        len(verified) - 1
     ):
 
-        start = verified_locations[i]
-        end = verified_locations[i + 1]
+        start = verified[i]
+        end = verified[i + 1]
 
         print(
             f"   Route: "
-            f"{start['name']} → {end['name']}"
+            f"{start['name']} → "
+            f"{end['name']}"
         )
 
         route = calculate_route_from_coordinates(
+
             start["coordinates"],
+
             end["coordinates"]
         )
 
-        if route.get("success"):
+        if route["success"]:
 
-            leg = {
+            legs.append({
+
                 "success": True,
+
                 "start": start["name"],
+
                 "end": end["name"],
-                "distance_km": route["distance_km"],
-                "duration_minutes": route[
-                    "duration_minutes"
-                ]
-            }
+
+                "distance_km":
+                    route["distance_km"],
+
+                "duration_minutes":
+                    route[
+                        "duration_minutes"
+                    ]
+            })
 
             total_distance += route[
                 "distance_km"
@@ -486,118 +667,60 @@ def calculate_trip_route(
 
         else:
 
-            leg = {
-                "success": False,
-                "start": start["name"],
-                "end": end["name"],
-                "message": route.get(
-                    "message",
-                    "Route unavailable"
-                )
-            }
+            legs.append({
 
-        legs.append(leg)
+                "success": False,
+
+                "start": start["name"],
+
+                "end": end["name"],
+
+                "message":
+                    route["message"]
+            })
 
     return {
+
         "success": True,
+
         "locations": [
             item["name"]
-            for item in verified_locations
+            for item in verified
         ],
+
         "legs": legs,
-        "total_distance_km": round(
-            total_distance,
-            1
-        ),
-        "total_drive_minutes": round(
-            total_minutes
-        ),
-        "successful_legs": sum(
-            1
-            for leg in legs
-            if leg.get("success")
-        ),
-        "failed_locations": failed_locations
+
+        "total_distance_km":
+            round(total_distance, 1),
+
+        "total_drive_minutes":
+            round(total_minutes),
+
+        "successful_legs":
+            sum(
+                1
+                for x in legs
+                if x["success"]
+            ),
+
+        "failed_locations":
+            failed_locations
     }
 
 
 # ============================================================
-# DESTINATION INFORMATION
+# DESTINATION COUNTRY / CURRENCY
 # ============================================================
 
 def get_destination_information(
-    destination: str
+    destination
 ):
-    """
-    Get country/currency information globally.
 
-    Uses REST Countries API.
-    """
-
-    query = destination.strip()
-
-    url = (
-        "https://restcountries.com/v3.1/"
-        f"name/{quote(query)}"
+    coordinates = geocode(
+        destination
     )
 
-    try:
-
-        response = SESSION.get(
-            url,
-            timeout=15
-        )
-
-        if response.status_code != 200:
-
-            return {
-                "country": None,
-                "currency": None,
-                "currency_code": None
-            }
-
-        data = response.json()
-
-        if not data:
-
-            return {
-                "country": None,
-                "currency": None,
-                "currency_code": None
-            }
-
-        country = data[0]
-
-        currencies = country.get(
-            "currencies",
-            {}
-        )
-
-        currency_code = None
-        currency_name = None
-
-        if currencies:
-
-            currency_code = list(
-                currencies.keys()
-            )[0]
-
-            currency_name = currencies[
-                currency_code
-            ].get("name")
-
-        return {
-            "country": country.get(
-                "name",
-                {}
-            ).get("common"),
-
-            "currency": currency_name,
-
-            "currency_code": currency_code
-        }
-
-    except Exception:
+    if not coordinates:
 
         return {
             "country": None,
@@ -605,91 +728,91 @@ def get_destination_information(
             "currency_code": None
         }
 
-
-# ============================================================
-# CURRENCY CONVERSION
-# ============================================================
-
-def get_exchange_rate(
-    from_currency: str,
-    to_currency: str = "USD"
-):
-    """
-    Get approximate live exchange rate.
-    """
-
-    if not from_currency:
-
-        return None
-
-    if from_currency.upper() == to_currency.upper():
-
-        return 1.0
-
-    url = (
-        "https://api.frankfurter.app/latest"
+    address = coordinates.get(
+        "address",
+        {}
     )
 
-    params = {
-        "from": from_currency.upper(),
-        "to": to_currency.upper()
+    country = address.get(
+        "country"
+    )
+
+    country_code = address.get(
+        "country_code"
+    )
+
+    if not country_code:
+
+        return {
+            "country": country,
+            "currency": None,
+            "currency_code": None
+        }
+
+    country_code = country_code.upper()
+
+    # Country code → currency
+    currency_map = {
+
+        "IN": ("Indian Rupee", "INR"),
+        "GB": ("British Pound", "GBP"),
+        "US": ("US Dollar", "USD"),
+        "DE": ("Euro", "EUR"),
+        "FR": ("Euro", "EUR"),
+        "IT": ("Euro", "EUR"),
+        "ES": ("Euro", "EUR"),
+        "JP": ("Japanese Yen", "JPY"),
+        "AU": ("Australian Dollar", "AUD"),
+        "CA": ("Canadian Dollar", "CAD"),
+        "SG": ("Singapore Dollar", "SGD"),
+        "AE": ("UAE Dirham", "AED"),
+        "CH": ("Swiss Franc", "CHF"),
+        "TH": ("Thai Baht", "THB"),
+        "MY": ("Malaysian Ringgit", "MYR")
     }
 
-    try:
+    currency = currency_map.get(
+        country_code
+    )
 
-        response = SESSION.get(
-            url,
-            params=params,
-            timeout=15
-        )
+    if currency:
 
-        response.raise_for_status()
+        return {
 
-        data = response.json()
+            "country": country,
 
-        rate = data.get(
-            "rates",
-            {}
-        ).get(
-            to_currency.upper()
-        )
+            "currency":
+                currency[0],
 
-        if rate:
+            "currency_code":
+                currency[1]
+        }
 
-            return float(rate)
+    # Fallback
+    return {
 
-    except Exception:
+        "country": country,
 
-        pass
+        "currency": None,
 
-    return None
+        "currency_code": "USD"
+    }
 
 
 # ============================================================
-# BUDGET ESTIMATION
+# BUDGET
 # ============================================================
 
 def calculate_budget(
-    max_budget: float,
-    days: int,
-    distance_km: float,
-    currency: str = "INR"
+    max_budget,
+    days,
+    distance_km,
+    currency="INR"
 ):
-    """
-    Destination-independent estimated budget.
-
-    IMPORTANT:
-    These are planning estimates, not live hotel,
-    restaurant, rental-car or ticket prices.
-    """
 
     currency = (
-        currency or "INR"
+        currency or "USD"
     ).upper()
-
-    # --------------------------------------------------------
-    # Approximate planning assumptions by currency
-    # --------------------------------------------------------
 
     profiles = {
 
@@ -732,7 +855,7 @@ def calculate_budget(
             "vehicle_day": 100,
             "hotel_night": 150,
             "food_day": 60,
-            "fuel_litre": 2.0
+            "fuel_litre": 2
         },
 
         "CAD": {
@@ -763,17 +886,14 @@ def calculate_budget(
         * days
     )
 
-    # Approximate fuel consumption
-    mileage = 12
-
     fuel = (
-        distance_km / mileage
+        distance_km / 12
     ) * profile["fuel_litre"]
 
     entry_misc = (
-        50
-        if currency == "USD"
-        else 500
+        500
+        if currency == "INR"
+        else 50
     )
 
     total = (
@@ -785,75 +905,78 @@ def calculate_budget(
     )
 
     return {
+
         "currency": currency,
-        "vehicle": round(vehicle),
-        "fuel": round(fuel),
-        "accommodation": round(
-            accommodation
-        ),
-        "food": round(food),
-        "entry_misc": round(
-            entry_misc
-        ),
-        "total": round(total),
-        "budget": round(max_budget),
-        "remaining": round(
-            max_budget - total
-        ),
-        "within_budget": (
+
+        "vehicle":
+            round(vehicle),
+
+        "fuel":
+            round(fuel),
+
+        "accommodation":
+            round(accommodation),
+
+        "food":
+            round(food),
+
+        "entry_misc":
+            round(entry_misc),
+
+        "total":
+            round(total),
+
+        "budget":
+            round(max_budget),
+
+        "remaining":
+            round(
+                max_budget - total
+            ),
+
+        "within_budget":
             total <= max_budget
-        )
     }
 
 
 # ============================================================
-# HOSPITAL / EMERGENCY SEARCH
+# HOSPITALS
 # ============================================================
 
 def search_hospitals(
-    destination: str,
-    max_results: int = 5
+    destination,
+    max_results=5
 ):
-    """
-    Search for hospitals near the destination.
-    """
-
-    query = (
-        f"major hospitals near "
-        f"{destination}"
-    )
 
     results = search_internet(
-        query,
+
+        f"major hospitals near "
+        f"{destination}",
+
         max_results
     )
 
-    hospitals = []
+    return [
 
-    for result in results:
+        {
+            "name": r["title"],
+            "url": r["url"],
+            "description":
+                r["snippet"]
+        }
 
-        hospitals.append({
-            "name": result["title"],
-            "url": result["url"],
-            "description": result[
-                "snippet"
-            ]
-        })
-
-    return hospitals
+        for r in results
+    ]
 
 
 # ============================================================
-# WHATSAPP SOS
+# SOS
 # ============================================================
 
 def generate_sos_link(
-    emergency_number: str,
-    location_name: str
+    emergency_number,
+    location_name
 ):
-    """
-    Generate WhatsApp SOS link.
-    """
 
     clean_number = "".join(
         filter(
@@ -863,7 +986,7 @@ def generate_sos_link(
     )
 
     message = (
-        "SOS! I am currently at "
+        f"SOS! I am currently at "
         f"{location_name}. "
         "Please check on me."
     )
@@ -876,73 +999,25 @@ def generate_sos_link(
 
 
 # ============================================================
-# CLEAN ATTRACTION NAME
+# CLEAN ATTRACTION
 # ============================================================
 
-def clean_attraction_name(name: str):
-    """
-    Clean attraction names returned by an LLM.
-    """
+def clean_attraction_name(name):
 
     if not name:
         return ""
 
     name = str(name)
 
-    # Remove bullets
     name = re.sub(
         r"^[\-\*\•\d\.\)\s]+",
         "",
         name
     )
 
-    # Remove markdown
     name = name.replace(
         "**",
         ""
     )
 
     return name.strip()
-
-
-# ============================================================
-# ROUTE SUMMARY
-# ============================================================
-
-def format_route_summary(
-    route_data: dict
-):
-    """
-    Convert route data into readable text.
-    """
-
-    if not route_data.get("success"):
-
-        return (
-            "Route calculation was unavailable."
-        )
-
-    lines = []
-
-    for leg in route_data.get(
-        "legs",
-        []
-    ):
-
-        if leg.get("success"):
-
-            lines.append(
-                f"{leg['start']} → "
-                f"{leg['end']}: "
-                f"{leg['distance_km']} km, "
-                f"{leg['duration_minutes']} min"
-            )
-
-    if not lines:
-
-        return (
-            "No verified road routes "
-            "were available."
-        )
-
-    return "\n".join(lines)

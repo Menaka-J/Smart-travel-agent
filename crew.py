@@ -5,9 +5,7 @@ from crewai import Crew, Task, Process
 
 from agents import (
     destination_agent,
-    routing_agent,
-    budget_agent,
-    safety_agent,
+    trip_analysis_agent,
     final_agent
 )
 
@@ -16,67 +14,113 @@ from tools import (
     calculate_trip_route,
     calculate_budget,
     search_hospitals,
-    generate_sos_link
+    generate_sos_link,
+    get_destination_information,
+    clean_attraction_name
 )
 
 
 # ============================================================
-# EXTRACT ATTRACTION NAMES
+# HELPERS
 # ============================================================
 
+def parse_budget(value):
+    """
+    Convert inputs such as:
+        ₹15,000
+        $500
+        15000
+        EUR 1000
+
+    into a number.
+    """
+
+    if isinstance(value, (int, float)):
+
+        return float(value)
+
+    value = str(value)
+
+    cleaned = re.sub(
+        r"[^\d.]",
+        "",
+        value
+    )
+
+    if not cleaned:
+
+        return 0.0
+
+    return float(cleaned)
+
+
 def extract_attractions(text):
+    """
+    Extract attraction names from the destination
+    research agent output.
+    """
 
     attractions = []
 
-    # Try JSON first
-    try:
+    lines = str(text).splitlines()
 
-        match = re.search(
-            r"\[[\s\S]*\]",
-            text
+    for line in lines:
+
+        line = clean_attraction_name(
+            line
         )
 
-        if match:
+        if not line:
+            continue
 
-            data = json.loads(
-                match.group()
-            )
+        # Remove common labels
+        line = re.sub(
+            r"^(attraction|place|location)\s*:\s*",
+            "",
+            line,
+            flags=re.I
+        )
 
-            if isinstance(data, list):
+        # Ignore obvious prose
+        if len(line) > 100:
+            continue
 
-                for item in data:
+        if any(
+            keyword in line.lower()
+            for keyword in [
+                "should visit",
+                "recommend",
+                "here are",
+                "based on",
+                "preferences"
+            ]
+        ):
+            continue
 
-                    if isinstance(item, str):
+        # Avoid JSON-like lines
+        if "{" in line or "}" in line:
+            continue
 
-                        attractions.append(
-                            item.strip()
-                        )
-
-                    elif isinstance(item, dict):
-
-                        name = item.get(
-                            "name"
-                        )
-
-                        if name:
-
-                            attractions.append(
-                                name.strip()
-                            )
-
-    except Exception:
-        pass
+        attractions.append(line)
 
     # Remove duplicates
-    final = []
+    unique = []
+
+    seen = set()
 
     for attraction in attractions:
 
-        if attraction not in final:
+        key = attraction.lower()
 
-            final.append(attraction)
+        if key not in seen:
 
-    return final[:8]
+            seen.add(key)
+
+            unique.append(
+                attraction
+            )
+
+    return unique[:10]
 
 
 # ============================================================
@@ -91,81 +135,195 @@ def run_smart_travel_agent(
     days=3
 ):
 
-    print("\n")
-    print("=" * 60)
-    print("SMART TRAVEL AGENT STARTED")
-    print("=" * 60)
-
-
     # ========================================================
-    # 1. DESTINATION RESEARCH
+    # INPUT PROCESSING
     # ========================================================
 
-    print("\n[1/6] Searching destination...")
+    destination = destination.strip()
 
-
-    search_results = search_internet(
-        f"{destination} tourist attractions "
-        f"{preferences}",
-        max_results=8
+    preferences = (
+        preferences.strip()
+        if preferences
+        else "general sightseeing"
     )
 
+    days = int(days)
 
-    research_text = "\n".join(
+    max_budget = parse_budget(
+        budget
+    )
+
+    # ========================================================
+    # DESTINATION INFORMATION
+    # ========================================================
+
+    destination_info = (
+        get_destination_information(
+            destination
+        )
+    )
+
+    currency = (
+        destination_info.get(
+            "currency_code"
+        )
+        or "USD"
+    )
+
+    country = (
+        destination_info.get(
+            "country"
+        )
+        or "Unknown"
+    )
+
+    print(
+        "\n=============================="
+    )
+
+    print(
+        "SMART TRAVEL AGENT"
+    )
+
+    print(
+        "=============================="
+    )
+
+    print(
+        f"Destination: {destination}"
+    )
+
+    print(
+        f"Country: {country}"
+    )
+
+    print(
+        f"Currency: {currency}"
+    )
+
+    print(
+        f"Duration: {days} days"
+    )
+
+    # ========================================================
+    # LIVE DESTINATION RESEARCH
+    # ========================================================
+
+    print(
+        "\n[1/5] Researching destination..."
+    )
+
+    search_queries = [
+
+        f"{destination} top tourist attractions",
+
+        f"{destination} best places to visit",
+
+        f"{destination} tourist attractions "
+        f"{preferences}",
+
+        f"{destination} travel guide"
+    ]
+
+    research_results = []
+
+    for query in search_queries:
+
+        results = search_internet(
+            query,
+            max_results=5
+        )
+
+        research_results.extend(
+            results
+        )
+
+    # Remove duplicate URLs
+
+    unique_results = []
+
+    seen_urls = set()
+
+    for result in research_results:
+
+        url = result.get(
+            "url",
+            ""
+        )
+
+        if url not in seen_urls:
+
+            seen_urls.add(url)
+
+            unique_results.append(
+                result
+            )
+
+    unique_results = unique_results[:15]
+
+    research_text = "\n\n".join(
 
         [
-            f"- {r['title']}: {r['snippet']}"
-            for r in search_results
+            (
+                f"TITLE: {r['title']}\n"
+                f"URL: {r['url']}\n"
+                f"INFO: {r['snippet']}"
+            )
+
+            for r in unique_results
         ]
 
     )
 
+    # ========================================================
+    # DESTINATION AGENT
+    # ========================================================
 
     research_task = Task(
 
         description=f"""
+You are researching this travel destination:
 
-Destination:
+DESTINATION:
 {destination}
 
-Travel preferences:
-{preferences}
-
-Trip duration:
+TRIP LENGTH:
 {days} days
 
-Use the following live research:
+TRAVEL PREFERENCES:
+{preferences}
 
+LIVE WEB RESEARCH:
 {research_text}
 
-Select 6 to 8 REAL tourist attractions.
+Identify 5 to 8 REAL tourist attractions
+from the supplied research.
 
-IMPORTANT:
-Return ONLY a JSON array of attraction names.
+Rules:
+
+1. Do not invent attractions.
+2. Prefer attractions actually associated
+   with the destination.
+3. Match the user's preferences.
+4. Return ONLY a simple numbered list.
+5. Use the attraction's commonly recognized name.
+6. Do not include explanations.
 
 Example:
 
-[
-    "Eravikulam National Park",
-    "Mattupetty Dam",
-    "Kundala Lake",
-    "Top Station",
-    "Echo Point",
-    "Tea Museum"
-]
-
-Do not include descriptions.
-Do not include markdown.
-Do not invent places.
+1. London Eye
+2. Tower of London
+3. British Museum
+4. Hyde Park
 """,
 
         expected_output=(
-            "A JSON array containing real attraction names."
+            "A numbered list containing "
+            "5 to 8 real attractions."
         ),
 
         agent=destination_agent
     )
-
 
     destination_crew = Crew(
 
@@ -182,84 +340,105 @@ Do not invent places.
         verbose=True
     )
 
+    research_output = (
+        destination_crew.kickoff()
+    )
 
-    destination_result = destination_crew.kickoff()
+    attraction_text = str(
+        research_output
+    )
 
     attractions = extract_attractions(
-        str(destination_result)
+        attraction_text
     )
 
-
     # ========================================================
-    # FALLBACK
+    # FALLBACK: SEARCH RESULT TITLES
     # ========================================================
 
-    if len(attractions) < 3:
+    if not attractions:
 
-        print(
-            "⚠️ Agent returned insufficient attractions."
-        )
+        attractions = []
 
-        # Search result titles as fallback
-        attractions = [
-            r["title"]
-            for r in search_results
-            if r["title"]
-        ][:6]
+        for result in unique_results:
 
+            title = result.get(
+                "title",
+                ""
+            )
+
+            title = clean_attraction_name(
+                title
+            )
+
+            if title:
+
+                attractions.append(
+                    title
+                )
+
+        attractions = attractions[:8]
 
     print(
-        f"Selected attractions: {attractions}"
+        "\nDiscovered attractions:"
     )
 
+    for attraction in attractions:
+
+        print(
+            f"  - {attraction}"
+        )
 
     # ========================================================
-    # 2. ROUTING
+    # VERIFIED ROUTING
     # ========================================================
 
-    print("\n[2/6] Calculating OSRM routes...")
-
+    print(
+        "\n[2/5] Calculating verified road routes..."
+    )
 
     route_data = calculate_trip_route(
         destination,
         attractions
     )
 
-
     print(
-        f"Total distance: "
-        f"{route_data['total_distance_km']} km"
+        "\nVerified locations:"
     )
 
-    print(
-        f"Total driving time: "
-        f"{route_data['total_drive_minutes']} minutes"
-    )
+    for location in route_data.get(
+        "locations",
+        []
+    ):
 
-
-    # ========================================================
-    # 3. BUDGET
-    # ========================================================
-
-    print("\n[3/6] Calculating budget...")
-
-
-    try:
-
-        max_budget = float(
-
-            re.sub(
-                r"[^\d.]",
-                "",
-                str(budget)
-            )
-
+        print(
+            f"  ✓ {location}"
         )
 
-    except:
+    if route_data.get(
+        "failed_locations"
+    ):
 
-        max_budget = 15000
+        print(
+            "\nLocations that could not "
+            "be geocoded:"
+        )
 
+        for location in route_data[
+            "failed_locations"
+        ]:
+
+            print(
+                f"  ✗ {location}"
+            )
+
+    # ========================================================
+    # BUDGET
+    # ========================================================
+
+    print(
+        "\n[3/5] Calculating estimated budget..."
+    )
 
     budget_data = calculate_budget(
 
@@ -267,178 +446,228 @@ Do not invent places.
 
         days=days,
 
-        distance_km=route_data[
-            "total_distance_km"
-        ]
+        distance_km=route_data.get(
+            "total_distance_km",
+            0
+        ),
+
+        currency=currency
     )
 
-
     # ========================================================
-    # 4. SAFETY
+    # HOSPITAL SEARCH
     # ========================================================
 
-    print("\n[4/6] Searching emergency facilities...")
-
+    print(
+        "\n[4/5] Searching emergency facilities..."
+    )
 
     hospitals = search_hospitals(
-        destination
+        destination,
+        max_results=5
     )
 
+    # ========================================================
+    # SOS
+    # ========================================================
 
     sos_link = generate_sos_link(
         emergency_contact,
         destination
     )
 
-
     # ========================================================
-    # 5. ROUTING AGENT
-    # ========================================================
-
-    print("\n[5/6] Optimizing itinerary...")
-
-
-    route_summary = "\n".join(
-
-        [
-
-            f"{leg['start']} → "
-            f"{leg['end']}: "
-            f"{leg.get('distance_km', 'N/A')} km, "
-            f"{leg.get('duration_minutes', 'N/A')} min"
-
-            for leg in route_data["legs"]
-
-            if leg.get("success")
-        ]
-
-    )
-
-
-    # ========================================================
-    # 6. FINAL AGENT
+    # OPERATIONS ANALYSIS AGENT
     # ========================================================
 
-    print("\n[6/6] Generating final itinerary...")
-
-
-    final_task = Task(
+    operations_task = Task(
 
         description=f"""
-
-Create a professional personalized travel itinerary.
+Analyze this verified travel data.
 
 DESTINATION:
 {destination}
 
-TRIP DURATION:
+COUNTRY:
+{country}
+
+TRIP:
+{days} days
+
+PREFERENCES:
+{preferences}
+
+ROUTE DATA:
+{json.dumps(route_data, indent=2)}
+
+BUDGET DATA:
+{json.dumps(budget_data, indent=2)}
+
+HOSPITAL SEARCH:
+{json.dumps(hospitals, indent=2)}
+
+Your job is to explain the operational
+travel situation.
+
+Do NOT invent data.
+
+Especially do not invent:
+- distances
+- driving times
+- hotel prices
+- hospital phone numbers
+- ticket prices
+
+Use only the supplied data.
+""",
+
+        expected_output=(
+            "A concise operational analysis "
+            "covering routes, budget and safety."
+        ),
+
+        agent=trip_analysis_agent
+    )
+
+    operations_crew = Crew(
+
+        agents=[
+            trip_analysis_agent
+        ],
+
+        tasks=[
+            operations_task
+        ],
+
+        process=Process.sequential,
+
+        verbose=True
+    )
+
+    operations_output = (
+        operations_crew.kickoff()
+    )
+
+    # ========================================================
+    # FINAL ITINERARY AGENT
+    # ========================================================
+
+    print(
+        "\n[5/5] Creating final itinerary..."
+    )
+
+    final_task = Task(
+
+        description=f"""
+Create the final travel itinerary.
+
+DESTINATION:
+{destination}
+
+COUNTRY:
+{country}
+
+DURATION:
 {days} days
 
 USER PREFERENCES:
 {preferences}
 
-SELECTED REAL ATTRACTIONS:
-{attractions}
+MAXIMUM BUDGET:
+{max_budget} {currency}
 
-VERIFIED OSRM ROUTES:
-{route_summary}
+VERIFIED ATTRACTIONS:
+{json.dumps(
+    route_data.get(
+        "locations",
+        []
+    ),
+    indent=2
+)}
 
-TOTAL VERIFIED DISTANCE:
-{route_data['total_distance_km']} km
-
-TOTAL VERIFIED DRIVING TIME:
-{route_data['total_drive_minutes']} minutes
+VERIFIED ROUTES:
+{json.dumps(
+    route_data,
+    indent=2
+)}
 
 BUDGET:
-Vehicle: ₹{budget_data['vehicle']}
-Fuel: ₹{budget_data['fuel']}
-Accommodation: ₹{budget_data['accommodation']}
-Food: ₹{budget_data['food']}
-Entry/Misc: ₹{budget_data['entry_misc']}
-
-TOTAL:
-₹{budget_data['total']}
-
-MAXIMUM:
-₹{budget_data['budget']}
-
-REMAINING:
-₹{budget_data['remaining']}
+{json.dumps(
+    budget_data,
+    indent=2
+)}
 
 HOSPITALS:
-{hospitals}
+{json.dumps(
+    hospitals,
+    indent=2
+)}
 
-SOS LINK:
+OPERATIONS ANALYSIS:
+{str(operations_output)}
+
+WHATSAPP SOS:
 {sos_link}
 
-
-IMPORTANT RULES:
-
-1. Do NOT invent route distances.
-2. Use ONLY the verified route values provided above.
-3. Show the total distance and driving time exactly.
-4. Do NOT show 0 km if verified route data exists.
-5. Do not claim prices are live.
-6. Clearly indicate if the budget is exceeded.
-7. Create a {days}-day itinerary.
-8. Use morning, afternoon and evening.
-9. Include emergency information.
-10. Include the WhatsApp SOS link.
-11. Keep the output clear and student-project friendly.
-
+Create a professional travel itinerary.
 
 FORMAT:
 
 # ✈️ Smart Travel Itinerary
 
-## 📍 Trip Overview
+## Trip Overview
 
-- Destination
-- Focus
-- Duration
-- Total Estimated Budget
-- Budget Status
+Destination:
+Country:
+Duration:
+Travel Style:
 
-## 🗓️ Day 1
+## Day 1
+- Morning
+- Afternoon
+- Evening
 
-### Morning
+## Day 2
 ...
 
-### Afternoon
-...
+Continue for all {days} days.
 
-### Evening
-...
+## 🗺️ Verified Route Summary
 
-## 🗓️ Day 2
+Show only routes that have verified
+distance and duration.
 
-### Morning
-...
+Use:
 
-### Afternoon
-...
+Start → Destination | X km | X min
 
-### Evening
-...
-
-Continue until Day {days}.
-
-## 🚗 Route Summary
-
-- Total Distance
-- Total Driving Time
-
-### Verified Route Legs
-
-List every successful route leg.
+Do NOT invent route numbers.
 
 ## 💰 Budget Breakdown
 
-Show a table.
+Show:
+
+- Transport
+- Fuel
+- Accommodation
+- Food
+- Entry / Miscellaneous
+- Total
+- Maximum Budget
+- Remaining / Exceeded
+
+Currency:
+{currency}
+
+Clearly state whether the estimate
+is within the user's budget.
 
 ## 🏥 Emergency & Safety
 
-List hospitals and emergency numbers.
+Show the hospitals returned by
+the search.
+
+Do not invent hospital phone numbers.
 
 ## 📱 Emergency SOS
 
@@ -446,17 +675,25 @@ Show the WhatsApp SOS link.
 
 ## ⚠️ Important Notes
 
-Mention that prices are estimates.
+Mention that route and budget values
+are estimates/verified tool results
+where appropriate.
+
+Do not claim hotel or ticket prices
+are live unless supplied by a live
+pricing source.
+
+Do not create fake information.
 """,
 
         expected_output=(
-            "A complete personalized travel itinerary "
-            "with verified routing, budget and safety."
+            "A complete day-wise travel itinerary "
+            "with verified routes, estimated budget "
+            "and emergency information."
         ),
 
         agent=final_agent
     )
-
 
     final_crew = Crew(
 
@@ -473,14 +710,32 @@ Mention that prices are estimates.
         verbose=True
     )
 
+    final_output = final_crew.kickoff()
 
-    final_result = final_crew.kickoff()
+    # ========================================================
+    # RETURN EVERYTHING
+    # ========================================================
 
+    return {
+        "final_itinerary": str(
+            final_output
+        ),
 
-    print("\n")
-    print("=" * 60)
-    print("SMART TRAVEL AGENT COMPLETED")
-    print("=" * 60)
+        "destination": destination,
 
+        "country": country,
 
-    return str(final_result)
+        "currency": currency,
+
+        "days": days,
+
+        "attractions": attractions,
+
+        "route_data": route_data,
+
+        "budget_data": budget_data,
+
+        "hospitals": hospitals,
+
+        "sos_link": sos_link
+    }

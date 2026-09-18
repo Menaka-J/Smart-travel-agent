@@ -1,0 +1,6 @@
+crewai==1.15.17
+litellm==1.98.0
+streamlit
+python-dotenv
+requests
+ddgs

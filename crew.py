@@ -1,12 +1,14 @@
+import os
 import re
 import time
+import requests
 
+from dotenv import load_dotenv
 from crewai import Crew, Task, Process
 
 from agents import (
     destination_agent,
-    final_agent,
-    main_llm
+    final_agent
 )
 
 from tools import (
@@ -20,124 +22,253 @@ from tools import (
 )
 
 
+load_dotenv()
+
+
 # ============================================================
-# GEMINI ERROR HANDLING
+# GEMINI DIRECT REST API
 # ============================================================
 
-def is_temporary_gemini_error(error):
+GEMINI_MODEL = "gemini-3.5-flash"
+
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/"
+    f"v1beta/models/{GEMINI_MODEL}:generateContent"
+)
+
+
+def direct_gemini_call(
+    prompt,
+    attempts=2
+):
     """
-    Detect temporary Gemini availability/server errors.
+    Call Google Gemini directly through the REST API.
+
+    This bypasses the CrewAI/LiteLLM Gemini execution path,
+    which was returning 503 errors.
     """
 
-    error_text = str(error).upper()
-
-    temporary_errors = [
-        "503",
-        "UNAVAILABLE",
-        "SERVICE UNAVAILABLE",
-        "INTERNAL SERVER ERROR",
-        "500 INTERNAL"
-    ]
-
-    return any(
-        error_type in error_text
-        for error_type in temporary_errors
+    api_key = os.getenv(
+        "GEMINI_API_KEY"
     )
 
+    if not api_key:
 
-def direct_gemini_call(prompt, attempts=3):
-    """
-    Call Gemini directly with controlled retries.
+        raise RuntimeError(
+            "GEMINI_API_KEY is not configured."
+        )
 
-    This is used when CrewAI's Gemini call fails with
-    a temporary 503 error.
-    """
+    payload = {
 
-    for attempt in range(1, attempts + 1):
+        "contents": [
+
+            {
+
+                "parts": [
+
+                    {
+                        "text": prompt
+                    }
+
+                ]
+
+            }
+
+        ]
+
+    }
+
+    for attempt in range(
+        1,
+        attempts + 1
+    ):
 
         try:
 
+            print()
             print(
-                f"\nGemini direct call "
+                f"Direct Gemini REST call "
                 f"(attempt {attempt}/{attempts})..."
             )
 
-            response = main_llm.call(prompt)
+            response = requests.post(
 
-            return str(response)
+                GEMINI_URL,
 
-        except Exception as error:
+                params={
+                    "key": api_key
+                },
 
-            print(
-                f"\nGemini error: {error}"
+                json=payload,
+
+                timeout=30
             )
 
-            if not is_temporary_gemini_error(error):
-                raise
+            print(
+                f"Gemini HTTP status: "
+                f"{response.status_code}"
+            )
+
+            # ------------------------------------------------
+            # SUCCESS
+            # ------------------------------------------------
+
+            if response.status_code == 200:
+
+                data = response.json()
+
+                candidates = data.get(
+                    "candidates",
+                    []
+                )
+
+                if not candidates:
+
+                    raise RuntimeError(
+                        "Gemini returned no candidates."
+                    )
+
+                content = candidates[0].get(
+                    "content",
+                    {}
+                )
+
+                parts = content.get(
+                    "parts",
+                    []
+                )
+
+                text_parts = []
+
+                for part in parts:
+
+                    text = part.get(
+                        "text",
+                        ""
+                    )
+
+                    if text:
+
+                        text_parts.append(
+                            text
+                        )
+
+                result = "\n".join(
+                    text_parts
+                ).strip()
+
+                if not result:
+
+                    raise RuntimeError(
+                        "Gemini returned an empty response."
+                    )
+
+                return result
+
+            # ------------------------------------------------
+            # TEMPORARY SERVER ERROR
+            # ------------------------------------------------
+
+            if response.status_code in (
+                500,
+                502,
+                503,
+                504
+            ):
+
+                print(
+                    "Gemini temporarily unavailable."
+                )
+
+                print(
+                    response.text[:500]
+                )
+
+                if attempt < attempts:
+
+                    wait_time = 5 * attempt
+
+                    print(
+                        f"Waiting "
+                        f"{wait_time} seconds..."
+                    )
+
+                    time.sleep(
+                        wait_time
+                    )
+
+                    continue
+
+                raise RuntimeError(
+                    "Gemini is temporarily unavailable "
+                    "after all attempts."
+                )
+
+            # ------------------------------------------------
+            # OTHER API ERROR
+            # ------------------------------------------------
+
+            raise RuntimeError(
+
+                f"Gemini API error "
+                f"{response.status_code}: "
+                f"{response.text[:1000]}"
+
+            )
+
+        except requests.Timeout:
+
+            print(
+                "Gemini request timed out."
+            )
 
             if attempt < attempts:
 
-                wait_time = attempt * 10
-
-                print(
-                    f"Gemini temporarily unavailable. "
-                    f"Waiting {wait_time} seconds..."
+                time.sleep(
+                    5 * attempt
                 )
 
-                time.sleep(wait_time)
+                continue
 
-            else:
+            raise RuntimeError(
+                "Gemini request timed out."
+            )
 
-                print(
-                    "Gemini remained unavailable "
-                    "after all retry attempts."
-                )
-
-                raise
+    raise RuntimeError(
+        "Gemini request failed."
+    )
 
 
-def run_crew_with_fallback(
-    crew,
+# ============================================================
+# AI STAGE
+# ============================================================
+
+def run_ai_stage(
     prompt,
     stage_name
 ):
     """
-    Try normal CrewAI execution first.
-
-    If Gemini returns a temporary 503 error,
-    fall back to a controlled direct Gemini call.
+    Run one AI planning stage using the verified
+    Gemini REST API.
     """
 
-    try:
+    print()
+    print(
+        "=" * 60
+    )
 
-        print(
-            f"\nRunning {stage_name} through CrewAI..."
-        )
+    print(
+        f"RUNNING: {stage_name}"
+    )
 
-        result = crew.kickoff()
+    print(
+        "=" * 60
+    )
 
-        return str(result)
-
-    except Exception as error:
-
-        print(
-            f"\nCrewAI {stage_name} failed:"
-        )
-
-        print(error)
-
-        if not is_temporary_gemini_error(error):
-            raise
-
-        print(
-            f"\nFalling back to direct Gemini "
-            f"for {stage_name}..."
-        )
-
-        return direct_gemini_call(
-            prompt,
-            attempts=3
-        )
+    return direct_gemini_call(
+        prompt,
+        attempts=2
+    )
 
 
 # ============================================================
@@ -146,7 +277,11 @@ def run_crew_with_fallback(
 
 def parse_budget(value):
 
-    if isinstance(value, (int, float)):
+    if isinstance(
+        value,
+        (int, float)
+    ):
+
         return float(value)
 
     value = str(value)
@@ -158,26 +293,36 @@ def parse_budget(value):
     )
 
     if not cleaned:
+
         return 0.0
 
-    return float(cleaned)
+    return float(
+        cleaned
+    )
 
 
 # ============================================================
 # EXTRACT ATTRACTIONS
 # ============================================================
 
-def extract_attractions(text):
+def extract_attractions(
+    text
+):
 
     attractions = []
 
-    lines = str(text).splitlines()
+    lines = str(
+        text
+    ).splitlines()
 
     for line in lines:
 
-        line = clean_attraction_name(line)
+        line = clean_attraction_name(
+            line
+        )
 
         if not line:
+
             continue
 
         # Remove common prefixes
@@ -197,10 +342,11 @@ def extract_attractions(text):
 
         # Ignore long explanatory sentences
         if len(line) > 100:
+
             continue
 
-        # Ignore prose
         ignored = [
+
             "should visit",
             "recommend",
             "here are",
@@ -212,23 +358,32 @@ def extract_attractions(text):
             "you should",
             "these attractions",
             "attractions are"
+
         ]
 
         if any(
             word in line.lower()
             for word in ignored
         ):
+
             continue
 
         # Ignore JSON
-        if "{" in line or "}" in line:
+        if (
+            "{" in line
+            or "}" in line
+        ):
+
             continue
 
         # Ignore markdown headings
         if line.startswith("#"):
+
             continue
 
-        attractions.append(line)
+        attractions.append(
+            line
+        )
 
     # Remove duplicates
     unique = []
@@ -241,7 +396,9 @@ def extract_attractions(text):
 
         if key not in seen:
 
-            seen.add(key)
+            seen.add(
+                key
+            )
 
             unique.append(
                 attraction.strip()
@@ -265,12 +422,6 @@ def build_fallback_itinerary(
     hospitals,
     sos_link
 ):
-    """
-    Creates a safe deterministic itinerary if Gemini
-    is temporarily unavailable during final generation.
-
-    Only verified data is used.
-    """
 
     locations = route_data.get(
         "locations",
@@ -287,7 +438,9 @@ def build_fallback_itinerary(
 
     lines.append("")
 
-    lines.append("## Trip Overview")
+    lines.append(
+        "## Trip Overview"
+    )
 
     lines.append(
         f"**Destination:** {destination}"
@@ -308,14 +461,19 @@ def build_fallback_itinerary(
     lines.append("")
 
     # --------------------------------------------------------
-    # Divide attractions across days
+    # Attractions by day
     # --------------------------------------------------------
 
     if attractions:
 
-        total_attractions = len(attractions)
+        total_attractions = len(
+            attractions
+        )
 
-        for day in range(1, days + 1):
+        for day in range(
+            1,
+            days + 1
+        ):
 
             lines.append(
                 f"## Day {day}"
@@ -369,6 +527,24 @@ def build_fallback_itinerary(
 
             lines.append("")
 
+    else:
+
+        for day in range(
+            1,
+            days + 1
+        ):
+
+            lines.append(
+                f"## Day {day}"
+            )
+
+            lines.append(
+                "Explore the destination "
+                "at your own pace."
+            )
+
+            lines.append("")
+
     # --------------------------------------------------------
     # Route
     # --------------------------------------------------------
@@ -382,7 +558,9 @@ def build_fallback_itinerary(
         []
     ):
 
-        if leg.get("success"):
+        if leg.get(
+            "success"
+        ):
 
             lines.append(
                 f"**{leg['start']} → "
@@ -499,7 +677,7 @@ def build_fallback_itinerary(
     )
 
     lines.append(
-        f"{sos_link}"
+        sos_link
     )
 
     lines.append("")
@@ -527,7 +705,9 @@ def build_fallback_itinerary(
         "confirmed before booking."
     )
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
@@ -550,16 +730,26 @@ def run_smart_travel_agent(
         else "general sightseeing"
     )
 
-    days = int(days)
+    days = int(
+        days
+    )
 
     max_budget = parse_budget(
         budget
     )
 
     print()
-    print("=" * 60)
-    print("SMART TRAVEL AGENT")
-    print("=" * 60)
+    print(
+        "=" * 60
+    )
+
+    print(
+        "SMART TRAVEL AGENT"
+    )
+
+    print(
+        "=" * 60
+    )
 
     print(
         f"Destination : {destination}"
@@ -627,6 +817,7 @@ def run_smart_travel_agent(
 
         f"{destination} tourist attractions "
         f"{preferences}"
+
     ]
 
     research_results = []
@@ -656,7 +847,9 @@ def run_smart_travel_agent(
 
         if url not in seen_urls:
 
-            seen_urls.add(url)
+            seen_urls.add(
+                url
+            )
 
             unique_results.append(
                 result
@@ -674,15 +867,16 @@ def run_smart_travel_agent(
     )
 
     # ========================================================
-    # 3. DESTINATION RESEARCH AGENT
+    # 3. DESTINATION RESEARCH AI
     # ========================================================
 
     print()
     print(
-        "[2/5] Running destination research agent..."
+        "[2/5] Running destination research..."
     )
 
     research_prompt = f"""
+
 You are the Global Destination Research Agent.
 
 Research the following travel destination.
@@ -718,47 +912,32 @@ Example:
 2. Tower of London
 3. British Museum
 4. Hyde Park
+
 """
 
-    research_task = Task(
-
-        description=research_prompt,
-
-        expected_output=(
-            "A numbered list of 5 to 8 real "
-            "tourist attractions."
-        ),
-
-        agent=destination_agent
-    )
-
-    research_crew = Crew(
-
-        agents=[
-            destination_agent
-        ],
-
-        tasks=[
-            research_task
-        ],
-
-        process=Process.sequential,
-
-        verbose=True
-    )
-
     # --------------------------------------------------------
-    # Run research agent safely
+    # AI research
     # --------------------------------------------------------
 
-    research_output = run_crew_with_fallback(
+    try:
 
-        research_crew,
+        research_output = run_ai_stage(
+            research_prompt,
+            "Destination Research"
+        )
 
-        research_prompt,
+    except Exception as error:
 
-        "destination research"
-    )
+        print()
+        print(
+            "AI destination research failed."
+        )
+
+        print(
+            error
+        )
+
+        research_output = ""
 
     attractions = extract_attractions(
         research_output
@@ -781,8 +960,9 @@ Example:
 
     if not attractions:
 
+        print()
         print(
-            "\nAI did not return attractions."
+            "AI did not return attractions."
         )
 
         print(
@@ -900,7 +1080,7 @@ Example:
     )
 
     # ========================================================
-    # FINAL GEMINI AGENT
+    # FINAL GEMINI STAGE
     # ========================================================
 
     print()
@@ -915,7 +1095,9 @@ Example:
         []
     ):
 
-        if leg.get("success"):
+        if leg.get(
+            "success"
+        ):
 
             verified_routes.append(
                 leg
@@ -939,7 +1121,18 @@ Example:
         for h in hospitals
     )
 
+    verified_attractions = "\n".join(
+
+        "- " + x
+
+        for x in route_data.get(
+            "locations",
+            []
+        )[1:]
+    )
+
     final_prompt = f"""
+
 You are the Global Itinerary Planning Agent.
 
 Create the final travel itinerary using ONLY the
@@ -961,28 +1154,16 @@ MAXIMUM BUDGET:
 {max_budget} {currency}
 
 VERIFIED ATTRACTIONS:
-{chr(10).join(
-    '- ' + x
-    for x in route_data.get(
-        'locations',
-        []
-    )[1:]
-)}
+{verified_attractions}
 
 VERIFIED ROAD ROUTES:
 {route_text}
 
 TOTAL VERIFIED DISTANCE:
-{route_data.get(
-    'total_distance_km',
-    0
-)} km
+{route_data.get('total_distance_km', 0)} km
 
 TOTAL VERIFIED DRIVING TIME:
-{route_data.get(
-    'total_drive_minutes',
-    0
-)} minutes
+{route_data.get('total_drive_minutes', 0)} minutes
 
 BUDGET:
 
@@ -1068,12 +1249,6 @@ FORMAT
 **Afternoon:**
 **Evening:**
 
-## Day 2
-
-**Morning:**
-**Afternoon:**
-**Evening:**
-
 Continue until Day {days}.
 
 ## 🗺️ Verified Route Summary
@@ -1120,48 +1295,18 @@ Mention that:
 - Route values are verified.
 - Attraction locations were verified.
 - Ticket and hotel prices should be confirmed before booking.
+
 """
 
-    final_task = Task(
-
-        description=final_prompt,
-
-        expected_output=(
-            "A complete professional day-wise "
-            "travel itinerary."
-        ),
-
-        agent=final_agent
-    )
-
-    final_crew = Crew(
-
-        agents=[
-            final_agent
-        ],
-
-        tasks=[
-            final_task
-        ],
-
-        process=Process.sequential,
-
-        verbose=True
-    )
-
-    # --------------------------------------------------------
-    # Run final agent safely
-    # --------------------------------------------------------
+    # ========================================================
+    # FINAL AI GENERATION
+    # ========================================================
 
     try:
 
-        final_output = run_crew_with_fallback(
-
-            final_crew,
-
+        final_output = run_ai_stage(
             final_prompt,
-
-            "final itinerary generation"
+            "Final Itinerary Generation"
         )
 
     except Exception as error:
@@ -1169,6 +1314,10 @@ Mention that:
         print()
         print(
             "Final Gemini generation failed."
+        )
+
+        print(
+            error
         )
 
         print(

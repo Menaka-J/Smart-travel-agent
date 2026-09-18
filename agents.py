@@ -8,11 +8,14 @@ load_dotenv()
 
 
 # ============================================================
-# GEMINI LLM
+# CREWAI LLM
 # ============================================================
 
+# Kept for the CrewAI agent definitions.
+# The actual Gemini generation in crew.py uses the
+# verified Google REST API directly.
 main_llm = LLM(
-    model="gemini/gemini-3.8-flash",
+    model="gemini/gemini-3.5-flash",
     api_key=os.getenv("GEMINI_API_KEY"),
     max_tokens=1800
 )

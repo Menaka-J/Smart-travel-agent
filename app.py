@@ -32,7 +32,7 @@ st.markdown(
 The system combines:
 
 - 🔎 Live destination research
-- 🤖 CrewAI multi-agent orchestration
+- 🤖 AI travel planning
 - 📍 Global geocoding
 - 🚗 Real road-route calculation
 - 💰 Destination-aware budget estimation
@@ -102,6 +102,10 @@ with st.sidebar:
 
 if generate:
 
+    # --------------------------------------------------------
+    # INPUT VALIDATION
+    # --------------------------------------------------------
+
     if not destination.strip():
 
         st.error(
@@ -119,13 +123,13 @@ if generate:
         st.stop()
 
     # --------------------------------------------------------
-    # Progress
+    # EXECUTION STATUS
     # --------------------------------------------------------
 
     with st.status(
         "🤖 Autonomous travel agents are working...",
         expanded=True
-    ):
+    ) as status:
 
         try:
 
@@ -147,30 +151,34 @@ if generate:
             )
 
             st.write(
-                "📍 Verifying attractions and routes..."
+                "📍 Attractions and routes verified."
             )
 
             st.write(
-                "💰 Calculating estimated budget..."
+                "💰 Budget calculated."
             )
 
             st.write(
-                "🏥 Searching emergency facilities..."
+                "🏥 Emergency facilities searched."
             )
 
             st.write(
-                "🤖 Generating final itinerary..."
+                "🤖 Final itinerary generated."
             )
 
-            st.update(
+            status.update(
+
                 label="✅ Travel planning completed",
+
                 state="complete"
             )
 
         except Exception as e:
 
-            st.update(
+            status.update(
+
                 label="❌ Travel planning failed",
+
                 state="error"
             )
 
@@ -178,7 +186,9 @@ if generate:
                 f"An execution error occurred: {e}"
             )
 
-            st.exception(e)
+            st.exception(
+                e
+            )
 
             st.stop()
 
@@ -194,9 +204,13 @@ if generate:
     # SUMMARY CARDS
     # ========================================================
 
-    route = result["route_data"]
+    route = result[
+        "route_data"
+    ]
 
-    budget_data = result["budget_data"]
+    budget_data = result[
+        "budget_data"
+    ]
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -261,6 +275,7 @@ if generate:
     ):
 
         st.warning(
+
             "Some attractions could not be "
             "verified on the map and were "
             "excluded from route calculations: "
@@ -269,6 +284,7 @@ if generate:
                     "failed_locations"
                 ]
             )
+
         )
 
     # ========================================================
@@ -280,15 +296,19 @@ if generate:
         []
     ):
 
-        if leg.get("success"):
+        if leg.get(
+            "success"
+        ):
 
             st.write(
+
                 f"🚗 **{leg['start']}** → "
                 f"**{leg['end']}**  \n"
                 f"Distance: "
                 f"**{leg['distance_km']} km** | "
                 f"Driving time: "
                 f"**{leg['duration_minutes']} min**"
+
             )
 
     st.divider()
@@ -353,15 +373,15 @@ if generate:
     ]:
 
         st.success(
-            f"✅ Estimated trip cost is "
-            f"within the maximum budget."
+            "✅ Estimated trip cost is "
+            "within the maximum budget."
         )
 
     else:
 
         st.error(
-            f"⚠️ Estimated trip cost exceeds "
-            f"the maximum budget."
+            "⚠️ Estimated trip cost exceeds "
+            "the maximum budget."
         )
 
     st.divider()
@@ -370,8 +390,14 @@ if generate:
     # FINAL ITINERARY
     # ========================================================
 
+    st.subheader(
+        "🧠 AI Generated Travel Itinerary"
+    )
+
     st.markdown(
-        result["final_itinerary"]
+        result[
+            "final_itinerary"
+        ]
     )
 
     # ========================================================
@@ -385,7 +411,8 @@ if generate:
     )
 
     st.markdown(
-        f"[🚨 Open WhatsApp SOS]({result['sos_link']})"
+        f"[🚨 Open WhatsApp SOS]"
+        f"({result['sos_link']})"
     )
 
     # ========================================================
@@ -409,14 +436,20 @@ if generate:
                 f"**{hospital['name']}**"
             )
 
-            if hospital["url"]:
+            if hospital.get(
+                "url"
+            ):
 
                 st.markdown(
-                    f"[View source]({hospital['url']})"
+                    f"[View source]"
+                    f"({hospital['url']})"
                 )
 
             st.caption(
-                hospital["description"]
+                hospital.get(
+                    "description",
+                    ""
+                )
             )
 
     else:

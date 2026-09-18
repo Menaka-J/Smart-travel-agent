@@ -1,39 +1,45 @@
-from crewai import Agent, LLM
 import os
+
 from dotenv import load_dotenv
+from crewai import Agent, LLM
 
 
 load_dotenv()
 
 
 # ============================================================
-# GEMINI
+# GEMINI LLM
 # ============================================================
 
 main_llm = LLM(
     model="gemini/gemini-3.6-flash",
-    api_key=os.getenv("GEMINI_API_KEY"),
+    api_key=os.getenv(
+        "GEMINI_API_KEY"
+    ),
     max_tokens=1800
 )
 
 
 # ============================================================
-# AGENT 1
+# DESTINATION RESEARCH AGENT
 # ============================================================
 
 destination_agent = Agent(
 
-    role="Destination Researcher",
+    role="Global Destination Research Agent",
 
     goal=(
-        "Research the destination and select suitable "
-        "real tourist attractions based on the user's "
+        "Research the requested destination using "
+        "the supplied live search results. Identify "
+        "real attractions that match the traveler's "
         "preferences and trip duration."
     ),
 
     backstory=(
-        "An expert travel researcher who creates "
-        "personalized destination recommendations."
+        "You are a professional global travel researcher. "
+        "You research destinations around the world and "
+        "select practical attractions based on traveler "
+        "preferences rather than inventing locations."
     ),
 
     llm=main_llm,
@@ -47,21 +53,25 @@ destination_agent = Agent(
 
 
 # ============================================================
-# AGENT 2
+# TRIP ANALYSIS AGENT
 # ============================================================
 
-routing_agent = Agent(
+trip_analysis_agent = Agent(
 
-    role="Routing Specialist",
+    role="Travel Operations Analyst",
 
     goal=(
-        "Analyze the verified attraction locations and "
-        "organize them into a practical travel sequence."
+        "Analyze verified destination, route, budget "
+        "and safety information. Never invent numerical "
+        "route distances, travel times, prices or "
+        "hospital information."
     ),
 
     backstory=(
-        "A logistics specialist who creates efficient "
-        "road travel routes between attractions."
+        "You are a travel operations specialist. "
+        "You work with verified data produced by "
+        "external tools and turn it into practical "
+        "travel-planning information."
     ),
 
     llm=main_llm,
@@ -75,79 +85,23 @@ routing_agent = Agent(
 
 
 # ============================================================
-# AGENT 3
-# ============================================================
-
-budget_agent = Agent(
-
-    role="Budget Manager",
-
-    goal=(
-        "Analyze transportation, accommodation, food "
-        "and miscellaneous expenses and ensure the trip "
-        "respects the user's maximum budget."
-    ),
-
-    backstory=(
-        "A travel financial planning specialist."
-    ),
-
-    llm=main_llm,
-
-    verbose=True,
-
-    cache=False,
-
-    max_iter=2
-)
-
-
-# ============================================================
-# AGENT 4
-# ============================================================
-
-safety_agent = Agent(
-
-    role="Safety Coordinator",
-
-    goal=(
-        "Provide useful emergency information, nearby "
-        "medical facilities and safety recommendations."
-    ),
-
-    backstory=(
-        "A travel safety specialist responsible for "
-        "emergency preparedness."
-    ),
-
-    llm=main_llm,
-
-    verbose=True,
-
-    cache=False,
-
-    max_iter=2
-)
-
-
-# ============================================================
-# FINAL AGENT
+# FINAL ITINERARY AGENT
 # ============================================================
 
 final_agent = Agent(
 
-    role="Itinerary Planning Agent",
+    role="Global Itinerary Planning Agent",
 
     goal=(
-        "Create a clear personalized day-wise itinerary "
-        "using the verified attractions, calculated routes, "
-        "budget and emergency information."
+        "Create a clear day-wise travel itinerary using "
+        "only the supplied verified research, route, "
+        "budget and safety information."
     ),
 
     backstory=(
-        "An expert autonomous travel planner who combines "
-        "multiple specialized agent outputs into one "
-        "practical travel plan."
+        "You are an expert international travel planner. "
+        "You combine research and verified operational "
+        "data into a realistic itinerary."
     ),
 
     llm=main_llm,
@@ -158,3 +112,41 @@ final_agent = Agent(
 
     max_iter=2
 )
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def validate_plan(
+    budget,
+    max_budget,
+    routes,
+    attractions
+):
+
+    problems = []
+
+    if budget > max_budget:
+
+        problems.append(
+            f"Budget exceeded by "
+            f"{budget - max_budget}"
+        )
+
+    if not attractions:
+
+        problems.append(
+            "No verified attractions found."
+        )
+
+    if not routes:
+
+        problems.append(
+            "Route information unavailable."
+        )
+
+    return {
+        "valid": not problems,
+        "problems": problems
+    }

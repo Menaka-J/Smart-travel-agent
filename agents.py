@@ -12,7 +12,7 @@ load_dotenv()
 # ============================================================
 
 main_llm = LLM(
-    model="gemini/gemini-3.6-flash",
+    model="gemini/gemini-3.8-flash",
     api_key=os.getenv("GEMINI_API_KEY"),
     max_tokens=1800
 )

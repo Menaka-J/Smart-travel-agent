@@ -13,9 +13,7 @@ load_dotenv()
 
 main_llm = LLM(
     model="gemini/gemini-3.6-flash",
-    api_key=os.getenv(
-        "GEMINI_API_KEY"
-    ),
+    api_key=os.getenv("GEMINI_API_KEY"),
     max_tokens=1800
 )
 
@@ -48,7 +46,7 @@ destination_agent = Agent(
 
     cache=False,
 
-    max_iter=2
+    max_iter=1
 )
 
 
@@ -80,7 +78,7 @@ trip_analysis_agent = Agent(
 
     cache=False,
 
-    max_iter=2
+    max_iter=1
 )
 
 
@@ -110,7 +108,7 @@ final_agent = Agent(
 
     cache=False,
 
-    max_iter=2
+    max_iter=1
 )
 
 

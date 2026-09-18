@@ -40,37 +40,7 @@ def parse_budget(value):
 
     return float(cleaned)
 
-def kickoff_with_retry(crew, attempts=3):
-    """
-    Retry CrewAI/Gemini calls when Gemini temporarily
-    returns a 503 UNAVAILABLE error.
-    """
 
-    for attempt in range(1, attempts + 1):
-
-        try:
-            return crew.kickoff()
-
-        except Exception as e:
-
-            error_text = str(e)
-
-            # Retry only temporary Gemini availability errors
-            if "503" not in error_text and "UNAVAILABLE" not in error_text:
-                raise
-
-            if attempt == attempts:
-                raise
-
-            wait_time = attempt * 10
-
-            print()
-            print(
-                f"Gemini temporarily unavailable "
-                f"(503). Retrying in {wait_time} seconds..."
-            )
-
-            time.sleep(wait_time)
 
 # ============================================================
 # EXTRACT ATTRACTIONS
@@ -353,7 +323,9 @@ Example:
         verbose=True
     )
 
-    research_output = kickoff_with_retry(research_crew)
+    research_output = (
+        research_crew.kickoff()
+    )
 
     attractions = extract_attractions(
         research_output
@@ -692,7 +664,7 @@ for numerical information.
         verbose=True
     )
 
-    final_output = kickoff_with_retry(final_crew)
+    final_output = final_crew.kickoff()
 
     # ========================================================
     # RETURN
